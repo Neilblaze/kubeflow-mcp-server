@@ -16,10 +16,21 @@
 
 import json
 import logging
+import sys
 
 import pytest
 
-from kubeflow_mcp.core.logging import StructuredFormatter, _redact_dict, request_context
+from kubeflow_mcp.core.logging import (
+    BufferingHandler,
+    ConsoleFormatter,
+    StructuredFormatter,
+    _redact_dict,
+    _redact_text,
+    get_log_buffer,
+    request_context,
+)
+
+_JWT = "eyJhbGciOiJIUzI1NiJ9.SECRETPAYLOAD.sig"
 
 
 class TestRedactDict:
@@ -163,3 +174,76 @@ class TestStructuredFormatterRedaction:
         output = json.loads(formatter.format(record))
 
         assert "context" not in output
+
+
+class TestRedactText:
+    """The one helper every log path shares."""
+
+    @pytest.mark.parametrize(
+        ("text", "leaked"),
+        [
+            (f"calling API with Authorization: Bearer {_JWT}", _JWT),
+            (f"header was authorization: Basic {_JWT}", _JWT),
+            ("kubeconfig has token: abc123def", "abc123def"),
+            ("auth failed for credential=hunter2", "hunter2"),
+            ("password=hunter2 was used", "hunter2"),
+        ],
+    )
+    def test_credential_is_removed(self, text, leaked):
+        result = _redact_text(text)
+        assert leaked not in result
+        assert "***" in result
+
+    def test_plain_message_untouched(self):
+        assert _redact_text("tool_call completed in 12ms") == "tool_call completed in 12ms"
+
+    def test_word_ending_in_keyword_not_matched(self):
+        # image_pull_secrets is a parameter name, not a credential assignment.
+        assert _redact_text("image_pull_secrets not set") == "image_pull_secrets not set"
+
+
+class TestLogPathsRedactConsistently:
+    """Buffer, stderr JSON, and console must agree on the same line."""
+
+    _LINE = f"calling API with Authorization: Bearer {_JWT}"
+
+    def _record(self, msg, exc_info=None):
+        return logging.LogRecord(
+            name="kubeflow_mcp.test",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg=msg,
+            args=(),
+            exc_info=exc_info,
+        )
+
+    def test_buffer_redacts_bearer_credential(self):
+        BufferingHandler().emit(self._record(self._LINE))
+        assert _JWT not in get_log_buffer()[-1]["message"]
+
+    def test_structured_formatter_redacts_message(self):
+        output = json.loads(StructuredFormatter().format(self._record(self._LINE)))
+        assert _JWT not in output["message"]
+
+    def test_console_formatter_redacts_message(self):
+        assert _JWT not in ConsoleFormatter().format(self._record(self._LINE))
+
+    def test_structured_formatter_redacts_exception_text(self):
+        try:
+            raise RuntimeError(f"boom: token={_JWT}")
+        except RuntimeError:
+            record = self._record("tool_call_failed", exc_info=sys.exc_info())
+
+        output = json.loads(StructuredFormatter().format(record))
+        assert _JWT not in output["exception"]
+
+    def test_all_paths_produce_the_same_message(self):
+        record = self._record(self._LINE)
+        BufferingHandler().emit(record)
+
+        buffered = get_log_buffer()[-1]["message"]
+        structured = json.loads(StructuredFormatter().format(record))["message"]
+
+        assert buffered == structured
+        assert buffered in ConsoleFormatter().format(record)

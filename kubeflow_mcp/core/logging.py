@@ -31,6 +31,26 @@ request_context: ContextVar[dict[str, Any] | None] = ContextVar("request_context
 
 _log_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
 
+# The credential may be preceded by an auth scheme, as in
+# ``Authorization: Bearer <jwt>``. Without the optional scheme group the match
+# ends at ``Bearer`` and leaves the credential itself in the line.
+_REDACT_PATTERNS = re.compile(
+    r"(token|password|secret|bearer|authorization|credential)"
+    r"[=: ]+"
+    r"(?:(?:bearer|basic|digest|token)\s+)?"
+    r"\S+",
+    re.IGNORECASE,
+)
+
+
+def _redact_text(text: str) -> str:
+    """Redact credential values in free text.
+
+    Every log path routes through here so a line is redacted the same way
+    whether it lands in the buffer, on stderr, or inside a structured field.
+    """
+    return _REDACT_PATTERNS.sub("***", text)
+
 
 def _redact_dict(d: Any) -> Any:
     """Recursively redact sensitive data for logging."""
@@ -50,7 +70,7 @@ def _apply_pattern(d: Any) -> Any:
     if isinstance(d, list):
         return [_apply_pattern(v) for v in d]
     if isinstance(d, str):
-        return _REDACT_PATTERNS.sub("***", d)
+        return _redact_text(d)
 
     return d
 
@@ -63,12 +83,12 @@ class StructuredFormatter(logging.Formatter):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": _redact_text(record.getMessage()),
             "correlation_id": correlation_id.get() or None,
         }
 
         if record.exc_info:
-            log_dict["exception"] = self.formatException(record.exc_info)
+            log_dict["exception"] = _redact_text(self.formatException(record.exc_info))
 
         ctx = request_context.get()
         if ctx is not None:
@@ -100,36 +120,20 @@ class ConsoleFormatter(logging.Formatter):
         cid = correlation_id.get()
         cid_str = f" [{cid[:8]}]" if cid else ""
         return (
-            f"{color}{record.levelname:8}{self.RESET}{cid_str} {record.name}: {record.getMessage()}"
+            f"{color}{record.levelname:8}{self.RESET}{cid_str} "
+            f"{record.name}: {_redact_text(record.getMessage())}"
         )
-
-
-_REDACT_PATTERNS = re.compile(
-    r"(token|password|secret|bearer|authorization|credential)[=: ]+\S+",
-    re.IGNORECASE,
-)
 
 
 class BufferingHandler(logging.Handler):
     """Handler that stores logs in memory buffer with sensitive data redacted."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        message = record.getMessage()
-        message = _REDACT_PATTERNS.sub(
-            lambda m: (
-                m.group().split("=")[0] + "=***"
-                if "=" in m.group()
-                else m.group().split(":")[0] + ": ***"
-                if ":" in m.group()
-                else m.group().split()[0] + " ***"
-            ),
-            message,
-        )
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": message,
+            "message": _redact_text(record.getMessage()),
         }
         _log_buffer.append(log_entry)
 

@@ -50,10 +50,18 @@ class CircuitBreaker:
     last_failure_time: float = field(default=0.0)
     half_open_calls: int = field(default=0)
     _half_open_successes: int = field(default=0)
+    _half_open_started: float = field(default=0.0)
     _lock: threading.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
+
+    def _open_probe_window(self, now: float) -> None:
+        """Start a fresh batch of half-open probes. Caller holds the lock."""
+        self.state = CircuitState.HALF_OPEN
+        self.half_open_calls = 0
+        self._half_open_successes = 0
+        self._half_open_started = now
 
     def can_execute(self) -> bool:
         """Check if call is allowed and atomically reserve a slot if half-open."""
@@ -61,14 +69,25 @@ class CircuitBreaker:
             if self.state == CircuitState.CLOSED:
                 return True
 
+            now = time.monotonic()
+
             if self.state == CircuitState.OPEN:
-                if time.time() - self.last_failure_time >= self.recovery_timeout:
-                    self.state = CircuitState.HALF_OPEN
-                    self.half_open_calls = 0
+                if now - self.last_failure_time >= self.recovery_timeout:
+                    self._open_probe_window(now)
                     logger.info("Circuit breaker: OPEN -> HALF_OPEN")
                     self.half_open_calls += 1
                     return True
                 return False
+
+            # A probe that never reports back holds its slot for good, and the
+            # breaker only leaves HALF_OPEN once a probe does report. Reopening
+            # a stale window keeps that from becoming a permanent outage.
+            if (
+                self.half_open_calls >= self.half_open_max_calls
+                and now - self._half_open_started >= self.recovery_timeout
+            ):
+                self._open_probe_window(now)
+                logger.info("Circuit breaker: reopened a stale half-open probe window")
 
             if self.half_open_calls < self.half_open_max_calls:
                 self.half_open_calls += 1
@@ -92,7 +111,7 @@ class CircuitBreaker:
         """Record failed call."""
         with self._lock:
             self.failure_count += 1
-            self.last_failure_time = time.time()
+            self.last_failure_time = time.monotonic()
 
             if self.state == CircuitState.HALF_OPEN:
                 self.state = CircuitState.OPEN
@@ -244,13 +263,13 @@ class RateLimiter:
 
     def __post_init__(self) -> None:
         self._tokens = self.capacity
-        self._last_update = time.time()
+        self._last_update = time.monotonic()
         self._lock = threading.Lock()
 
     def acquire(self, tokens: float = 1.0) -> bool:
         """Try to acquire tokens. Returns True if successful."""
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             elapsed = now - self._last_update
             self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
             self._last_update = now
@@ -270,10 +289,10 @@ class SessionManager:
 
     def record_activity(self) -> None:
         """Record session activity."""
-        self._timestamps.append(time.time())
+        self._timestamps.append(time.monotonic())
 
     def is_stale(self) -> bool:
         """Check if session appears stale."""
         if not self._timestamps:
             return False
-        return time.time() - self._timestamps[-1] > self.max_age
+        return time.monotonic() - self._timestamps[-1] > self.max_age

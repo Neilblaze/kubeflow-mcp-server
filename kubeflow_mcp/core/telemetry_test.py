@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kubeflow_mcp.common.constants import ErrorCode
 from kubeflow_mcp.core import telemetry
 from kubeflow_mcp.core.server import _audit_wrap
 
@@ -372,6 +373,49 @@ def test_audit_wrap_records_exception_on_failure(monkeypatch: pytest.MonkeyPatch
         status = span.status_code
         assert status.status_code == _StatusCode.ERROR
         assert status.description == "boom"
+
+
+def test_audit_wrap_records_success_for_non_infrastructure_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A validation error must resolve the breaker probe, not leave it hanging."""
+    import kubeflow_mcp.core.server as server_mod
+
+    breaker = _FakeBreaker()
+    monkeypatch.setattr(server_mod, "_rate_limiter", None)
+    monkeypatch.setattr(server_mod, "with_correlation_id", lambda: "cid-789")
+    monkeypatch.setattr(server_mod, "get_effective_persona", lambda: "readonly")
+    monkeypatch.setattr(server_mod, "get_tracer", lambda _name: _FakeTracer(_FakeSpan()))
+    monkeypatch.setattr(server_mod, "get_breaker", lambda _tool: breaker)
+
+    def rejecting_tool(**_kwargs):
+        return {"success": False, "error": "bad name", "error_code": ErrorCode.VALIDATION_ERROR}
+
+    _audit_wrap(rejecting_tool)()
+
+    assert breaker.successes == 1
+    assert breaker.failures == 0
+
+
+def test_audit_wrap_records_failure_for_infrastructure_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kubeflow_mcp.core.server as server_mod
+
+    breaker = _FakeBreaker()
+    monkeypatch.setattr(server_mod, "_rate_limiter", None)
+    monkeypatch.setattr(server_mod, "with_correlation_id", lambda: "cid-789")
+    monkeypatch.setattr(server_mod, "get_effective_persona", lambda: "readonly")
+    monkeypatch.setattr(server_mod, "get_tracer", lambda _name: _FakeTracer(_FakeSpan()))
+    monkeypatch.setattr(server_mod, "get_breaker", lambda _tool: breaker)
+
+    def failing_tool(**_kwargs):
+        return {"success": False, "error": "api down", "error_code": ErrorCode.SDK_ERROR}
+
+    _audit_wrap(failing_tool)()
+
+    assert breaker.failures == 1
+    assert breaker.successes == 0
 
 
 def test_audit_wrap_circuit_breaker_open(monkeypatch: pytest.MonkeyPatch) -> None:

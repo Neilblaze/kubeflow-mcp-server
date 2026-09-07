@@ -91,7 +91,43 @@ class TestCircuitBreaker:
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
-    # TODO(test): test half_open_max_calls limit
+    @pytest.mark.slow
+    def test_half_open_max_calls_limit(self):
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.05, half_open_max_calls=2)
+        cb.record_failure()
+        time.sleep(0.06)
+
+        assert cb.can_execute() is True
+        assert cb.can_execute() is True
+        assert cb.can_execute() is False
+        assert cb.half_open_calls == 2
+
+    @pytest.mark.slow
+    def test_half_open_reopens_when_a_probe_never_reports(self):
+        """A probe that records neither outcome must not wedge the breaker."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01, half_open_max_calls=2)
+        cb.record_failure()
+        time.sleep(0.02)
+
+        cb.can_execute()
+        cb.record_success()
+        cb.can_execute()  # this probe never reports back
+
+        assert cb.can_execute() is False
+        time.sleep(0.02)
+        assert cb.can_execute() is True
+        assert cb.state == CircuitState.HALF_OPEN
+
+    def test_recovery_ignores_wall_clock_jumps(self, monkeypatch):
+        """A wall-clock jump must not release the circuit before its timeout."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=60.0)
+        cb.record_failure()
+
+        jumped = time.time() + 3600
+        monkeypatch.setattr("time.time", lambda: jumped)
+        assert cb.can_execute() is False
+        assert cb.state == CircuitState.OPEN
+
     # TODO(test): test thread safety with concurrent record_failure/record_success
 
 
@@ -184,6 +220,12 @@ class TestRateLimiter:
         for _ in range(5):
             rl.acquire()
         time.sleep(0.01)
+        assert rl.acquire() is True
+
+    def test_acquire_ignores_wall_clock_jumps(self, monkeypatch):
+        rl = RateLimiter(rate=10.0, capacity=5.0)
+
+        monkeypatch.setattr("time.time", lambda: 0.0)
         assert rl.acquire() is True
 
     # TODO(test): test thread safety with concurrent acquire

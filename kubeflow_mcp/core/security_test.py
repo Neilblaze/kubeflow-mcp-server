@@ -372,4 +372,11 @@ def test_truncate_long_output():
     assert "truncated" in result
 
 
+def test_truncate_keeps_tail():
+    output = "start-of-log\n" + "filler\n" * 500 + "fatal error at the end"
+    result = truncate_log_output(output, max_length=100)
+    assert result.endswith("fatal error at the end")
+    assert "start-of-log" not in result
+
+
 # TODO(test): test exact boundary (max_length characters)

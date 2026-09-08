@@ -181,10 +181,8 @@ def _audit_wrap(tool_func):
                 )
                 span.set_attribute("tool.success", is_success)
                 span.set_attribute("tool.duration_ms", duration_ms)
-                # A validation or not-found result still completed without an
-                # infrastructure fault, so it counts as a healthy probe. Recording
-                # nothing would leave a reserved half-open slot unresolved, which
-                # the breaker never hands back. Matches execute_tool's accounting.
+                # A non-infrastructure result still resolves the half-open probe,
+                # so it records a success here, matching execute_tool.
                 if is_infrastructure_error(result):
                     breaker.record_failure()
                 else:

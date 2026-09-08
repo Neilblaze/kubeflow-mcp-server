@@ -223,6 +223,11 @@ class TestRateLimiter:
         assert rl.acquire() is True
 
     def test_acquire_ignores_wall_clock_jumps(self, monkeypatch):
+        """A backward wall-clock step must not drain the bucket.
+
+        time.time is patched because that is the clock the limiter used to read.
+        Patching monotonic would assert a step it cannot make.
+        """
         rl = RateLimiter(rate=10.0, capacity=5.0)
 
         monkeypatch.setattr("time.time", lambda: 0.0)

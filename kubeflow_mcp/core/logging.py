@@ -31,12 +31,12 @@ request_context: ContextVar[dict[str, Any] | None] = ContextVar("request_context
 
 _log_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
 
-# The credential may be preceded by an auth scheme, as in
-# ``Authorization: Bearer <jwt>``. Without the optional scheme group the match
-# ends at ``Bearer`` and leaves the credential itself in the line.
+# The scheme word is matched too, as in ``Authorization: Bearer <jwt>``. The
+# separator has to be a real ``=`` or ``:``, otherwise prose like ``bearer auth``
+# matches and ordinary log lines get mangled.
 _REDACT_PATTERNS = re.compile(
     r"(token|password|secret|bearer|authorization|credential)"
-    r"[=: ]+"
+    r"\s*[=:]\s*"
     r"(?:(?:bearer|basic|digest|token)\s+)?"
     r"\S+",
     re.IGNORECASE,

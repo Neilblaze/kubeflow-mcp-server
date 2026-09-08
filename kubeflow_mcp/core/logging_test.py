@@ -201,6 +201,14 @@ class TestRedactText:
         # image_pull_secrets is a parameter name, not a credential assignment.
         assert _redact_text("image_pull_secrets not set") == "image_pull_secrets not set"
 
+    def test_prose_keyword_not_matched(self):
+        # The cli.py auth warning names flags and env vars, not credential values.
+        warning = (
+            "Set --auth-token or KUBEFLOW_MCP_AUTH_TOKEN for bearer auth, "
+            "or KUBEFLOW_MCP_JWKS_URI for JWT verification."
+        )
+        assert _redact_text(warning) == warning
+
 
 class TestLogPathsRedactConsistently:
     """Buffer, stderr JSON, and console must agree on the same line."""
@@ -245,5 +253,6 @@ class TestLogPathsRedactConsistently:
         buffered = get_log_buffer()[-1]["message"]
         structured = json.loads(StructuredFormatter().format(record))["message"]
 
+        assert buffered == "calling API with ***"
         assert buffered == structured
         assert buffered in ConsoleFormatter().format(record)

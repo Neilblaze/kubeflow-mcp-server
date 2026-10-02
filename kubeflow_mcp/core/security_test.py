@@ -373,6 +373,10 @@ def test_truncate_keeps_tail():
     assert "start-of-log" not in result
 
 
+def test_truncate_one_over_limit_drops_first_char():
+    assert truncate_log_output("axxxxx", max_length=5) == "... (truncated, 6 total chars)\nxxxxx"
+
+
 def test_truncate_smallest_max_length_keeps_last_char():
     assert truncate_log_output("abc", max_length=1) == "... (truncated, 3 total chars)\nc"
 
